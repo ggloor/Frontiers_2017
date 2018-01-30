@@ -1,0 +1,720 @@
+---
+title: "Supplementary workflow"
+author: "Greg Gloor"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+geometry: margin=2cm
+bibliography: frontiers_supp.bib
+csl: frontiers.csl
+output:
+    pdf_document:
+        keep_tex: false
+        fig_caption: true
+        toc: true
+        toc_depth: 2
+        includes:
+            in_header: header.tex
+        pandoc_args: [
+            "-V", "classoption=twocolumn"
+        ]
+---
+
+# About this document
+
+This document is an .Rmd document and can be found at:
+
+github.com/ggloor/paper_supplements/Frontiers_CoDa_2017
+
+The document is the supplement and companion to the "Microbiome datasets are compositional: and this is not optional." review article. This document is necessarily more technical than the review. It contains interspersed markdown and R code that is compiled into a pdf document and supports the figures and assertions in the main article. R code is not exposed in the pdf document but is referred to by `R code block` in the text so that the interested reader can work through the example code themselves.
+
+## Reproducing the analysis
+From an R command prompt you can compile this document into PDF if you have \LaTeX and pandoc installed:
+
+`rmarkdown::render('Frontiers_supplement.Rmd')` or you can open the file in RStudio and compile in that environment.
+
+We will use a subset of the Human Microbiome Project (HMP) oral microbiome dataset and will be comparing samples from attached keratinized gingiva (ak) with outer plaque biofilm (op) included in the CoDaSeq R package.  The HMP dataset is exceedingly sparse (contains many 0 values), and has wide variation in read depth: this makes the dataset a good stress test for the method.
+
+## R packages required
+
+We will need the following R packages and add-ons (`R_block_1`).
+
+1. knitr (CRAN)
+2. CoDaSeq (https:github.com/ggloor/CoDaSeq)
+3. ALDEx2 (Bioconductor)
+4. zCompositions (CRAN)
+5. igraph (CRAN)
+6. grDevices (CRAN)
+7. car (CRAN, loaded with ALDEx2)
+8. propr (CRAN)
+9. vegan (CRAN)
+
+```{r R_block_1, results="hide", echo=F, message=F, error=F, warnings=F}
+
+# in theory - requires knitr and LaTeX installed
+# from a bash prompt:
+# R -e "rmarkdown::render('Frontiers_Supplement.Rmd')"
+# from within an R terminal:
+# rmarkdown::render('Frontiers_supplement.Rmd')
+# commands to load libraries and datasets
+library(knitr)
+library(ALDEx2)
+library(CoDaSeq)
+library(zCompositions)
+library(igraph)
+library(car)
+library(grDevices)
+library(propr)
+library(vegan)
+
+data(ak_op)
+data(hmpgenera)
+
+# can remove
+#opts_chunk$set(dev = 'pdf')
+
+# calculate the expected value of phi and rho for use later
+# this block contains calculations used for later code blocks
+# this code block is slow
+
+##### This is the entire dataset point and Expected value estimates
+# filter the dataset
+f <- codaSeq.filter(ak_op, min.reads=1000, min.prop=0.005, min.occurrence=0.2, samples.by.row=FALSE)
+# replace 0 values with an estimate
+f.n0 <- cmultRepl(t(f), method="CZM", label=0)
+
+# calculate the rho statistic
+perb.all <- perb(f.n0, ivar="iqlr")
+rownames(perb.all@matrix) <- colnames(perb.all@counts)
+colnames(perb.all@matrix) <- colnames(perb.all@counts)
+diag(perb.all@matrix) <- 0
+
+# Spearman's and Pearson's correlation on proportions
+cor.f <- cor(f.n0, method="spearman")
+cor.p <- cor(f.n0, method="pearson")
+
+# generate the CLR values for plotting later
+f.clr <- codaSeq.clr(f.n0)
+diag(cor.f) <- 0
+diag(cor.p) <- 0
+
+# generate the aldex object for Expected values
+conds <- c(rep("A", 15), rep("O", 15))
+##### Expected value of differential abundance using ALDEx2
+
+#### Change the mc.samples from 256 to 1000 to observe
+#### more reproducible rho values
+# estimate the distribution of CLR values
+f.x <- aldex.clr(f, conds, mc.samples=256, verbose=FALSE)
+# generate the expected CLR value for each OTU
+# along with expected value of effect sizes
+f.e <- aldex.effect(f.x, conds,
+    include.sample.summary=TRUE,
+    verbose=FALSE)
+# calculate expected P values
+f.t <- aldex.ttest(f.x, conds)
+
+# select 'significant' features
+low.p <- which(f.t$we.eBH < 0.05)
+high.e <- which(abs(f.e$effect) >=1)
+
+# get a matrix of E(CLR) values
+# samples by row
+# use for ordination and dendrogram
+E.E.clr <- t(f.e[,grep("rab.sample", colnames(f.e))])
+rownames(E.E.clr) <- gsub("rab.sample.", "", rownames(E.E.clr))
+exp <- apply(E.E.clr, 1, function(x) 2^x)
+E.clr <- t(apply(exp, 2, function(x) log2(x) - mean(log2(x)) ))
+
+# using the propr package to calculate E(phi) and E(rho)
+#x <- ALDEx2::aldex.clr(f, conds, denom = "all", verbose=FALSE, mc.samples=128)
+rho.all <- propr::aldex2propr(f.x, how = "perb")
+phi.all <- propr::aldex2propr(f.x, how = "phit")
+diag(rho.all@matrix) <- 0
+diag(phi.all@matrix) <- 1
+rownames(rho.all@matrix) <- colnames(rho.all@counts)
+rownames(phi.all@matrix) <- colnames(phi.all@counts)
+colnames(rho.all@matrix) <- colnames(rho.all@counts)
+colnames(phi.all@matrix) <- colnames(phi.all@counts)
+
+##### This is the same calculations on the dataset with 5 abundant OTUs removed
+# the 5 most abundant things are:
+# "35898" "38382" "38665" "38765" "39103"
+# so what happens if we remove them
+f.r <- !rownames(f) %in% c("35898","38382","38665","38765","39103")
+f.rare <- f[f.r,]
+
+f.rare.n0 <- cmultRepl(t(f.rare), method="CZM", label=0)
+f.rare.clr <- codaSeq.clr(f.rare.n0)
+perb.rare <- perb(f.rare.n0, ivar="iqlr")
+rownames(perb.rare@matrix) <- colnames(perb.rare@counts)
+colnames(perb.rare@matrix) <- colnames(perb.rare@counts)
+diag(perb.rare@matrix) <- 0
+
+f.rare.x <- aldex.clr(f.rare, conds, verbose=FALSE)
+f.rare.e <- aldex.effect(f.rare.x, conds, include.sample.summary=TRUE, verbose=FALSE)
+
+# Drop 5 abundant OTUs
+# generate the distribution of clr values only, not doing differential abundance
+f.rare.x <- aldex.clr(f.rare, conds, denom = "all", verbose=FALSE, mc.samples=128)
+rho.rare <- propr::aldex2propr(f.rare.x, how = "perb")
+phi.rare <- propr::aldex2propr(f.rare.x, how = "phit")
+rownames(rho.rare@matrix) <- colnames(rho.rare@counts)
+rownames(phi.rare@matrix) <- colnames(phi.rare@counts)
+colnames(rho.rare@matrix) <- colnames(rho.rare@counts)
+colnames(phi.rare@matrix) <- colnames(phi.rare@counts)
+diag(rho.rare@matrix) <- 0
+diag(phi.rare@matrix) <- 1
+
+
+# Spearman's point estimate
+f.rare.n0 <- cmultRepl(t(f.rare), method="CZM", label=0)
+
+# generate the CLR values for plotting late
+f.rare.clr <- codaSeq.clr(f.rare.n0)
+
+cor.rare.f <- cor(f.rare.n0, method="spearman")
+cor.rare.p <- cor(f.rare.n0, method="pearson")
+diag(cor.rare.f) <- 0
+diag(cor.rare.p) <- 0
+```
+
+\clearpage
+
+# Standard and compostional workflow
+
+![Standard and compositional methods to analyze the microbiome.](./methods.pdf)
+
+ The standard microbiome analysis, illustrated in Figure 1, is initiated by normalizing the reads to a common sequencing depth. Historically normalization was performed by rarefaction, but increasingly uses  the method of count normalization from the DESeq package [@Weiss:2017aa]. The results of the standard analysis pipelines strongly depend upon the read depth without normalization. The compositional replacement is to covert the data to ratios, generally using the centred log-ratio but other approaches are  possible [@Aitchison:1986; @gloor2016s]. Downstream methods using a log-ratio approach are affected minimally by read depth, unless the difference in depth between samples is egregious. The usual next step is to determine distances between samples for $\beta$-diversity, ordination and multivariate comparison. The standard approach offers a rich choice of distance and dissimilarity metrics, largely because no single metric captures the data completely. There is considerable uncertainty regarding the appropriate metric [@Weiss:2017aa]. In contrast, the compositional approach offers the Aitchison distance metric, which is an appropriate and consistent metric [@Aitchison2000, @martin1998measures]. This simplifies the downstream analyses and prevents 'distance-metric hacking' whereby different metrics are used for different purposes [@Wong:2016aa]. Exploratory data analysis and multivariate comparison between groups in the standard approach uses a Principle Co-ordinates Analysis which is based on identifying relationships between samples using the distance metric(s) calculated in the previous step. PCoA can be very powerful, but care must be taken to ensure that the results are not simply driven by the most abundant taxon, gene or OTU in the analysis [@Gorvitovskaia:2016aa]. In contrast, ordination in the compositional approach is driven by the genes, OTUs or taxa that have the largest variation in the dataset [@aitchison2002biplots]. Furthermore, plotting using PCA biplots has the added benefit of displaying the relationships between the samples and the features in the samples on one plot. In a compositional analysis the Aitchison distance can be used as a drop-in replacement in the multivariate comparison step. Any of the standard correlation strategies are wrong for these data [@Lovell:2015], and there are a number of methods described below that may be useful. We suggest the use of the $\rho$ metric [@erb:2016], or other compositional approaches. Many tools are available to estimate which features exhibit differential relative abundance in these datasets. They have many different characteristics and often generate many false positives, but the compositionally appropriate ANCOM and ALDEx2 are generally less prone to these problems than are the non-compositional approaches [@Thorsen:2016aa; @Weiss:2017aa]
+
+\clearpage
+
+# Log-ratio transformations
+
+There are three main log-ratio transformations; the additive log-ratio (alr), centred log-ratio (clr) and the isometric log-ratio (ilr) [@pawlowsky2015modeling].
+
+Given an observation sample vector  $\boldsymbol{\vec{x}}$ of $D$ `counted' features (taxa, operational taxonomic units or OTUs, genes, etc.) $\boldsymbol{\vec{x}}=[x_1, x_2, ... x_D]$:
+
+The alr is the simply the elements of the sample vector divided by a presumed invariant feature, which by convention here is the last one:
+\begin{equation}
+ \boldsymbol{\vec{x}}_{alr}=[log(x_1/x_D), log(x_2/x_D) \ldots log(x_D-1/x_D]
+\end{equation}
+
+This is similar to the concept used in quantitative PCR, where the relative abundance of the feature of interest is divided by the relative abundance of a (presumed) constant `houseskeeping' feature. Of course there are two major drawbacks. First, that the experimentalist's knowledge of which, if any, features are invariant is necessarily incomplete. Second, is that the choice of the (presumed) invariant feature has a large effect on the result if the presumed invariant feature is not invariant, or if it is correlated with any other features in the dataset. Interestingly, an early proposal was to use the geometric mean of a number of internal controls [@Vandesompele:2002aa], leading to the next transformation.
+
+The centered log-ratio (clr) transformation introduced by [@Ait1983,@Aitchison:1986] uses the geometric mean of all features as the denominator:
+
+\begin{multline}
+ \boldsymbol{\vec{x}}_{clr}=[log(x_1/G(\boldsymbol{\vec{x}})), log(x_2/G(\boldsymbol{\vec{x}})) \ldots log(x_D/G(\boldsymbol{\vec{x}}))], \\
+G(\boldsymbol{\vec{x}})= \sqrt[D]{x_1 \cdot x_2 \cdot ... \cdot x_D}
+\label{eq:clr}
+\end{multline}
+
+where $G(\boldsymbol{\vec{x}})$ is the geometric mean of $\boldsymbol{\vec{x}}$.
+
+The clr is often criticized since it has the property that the sum of the clr vector must equal 0. This constraint causes a singular covariance matrix; i.e., the sum of the covariance matrix is always a constant [@pawlowsky2015modeling]. However the clr has the advantage of being readily interpretable, a value in the vector is its abundance \emph{relative} to a mean value.
+
+The ilr is the final transformation, and is a series of sequential log-ratios between two groups of features. For example, the philr transformation is the series of ratios between OTUs partitioned along the phylogenetic tree [@Silverman:2017aa], although any other sequential binary partitioning  scheme is also possible [@pawlowsky2015modeling]. The ilr transformation does not suffer the drawbacks of either the alr or clr, but does not allow for insights into relationships between single features in the dataset.  Nevertheless, ilr transformations permit the full-range of multivariate tools to be used, and are recommended whenever possible.
+
+The ilr and clr are directly comparable in a two important ways: First, the distances between samples computed using an ilr and clr transformation are equivalent. Second, the clr approaches the ilr in other respects as the number of features becomes large. In this respect, the large number of features --- hundreds in the case of OTUs, thousands in the case of genes --- in a typical experiment works in our favour. Thus, while not perfect, the clr is the most widely used transformation. However, care must be taken when interpreting its outputs since single features must always be interpreted as a ratio between the feature and the denominator used for the clr transformation. The problems of using clr are apparent  when some subcomposition or group of taxa is analysed for further insight since the geometric mean of the subcomposition is not necessarily equal to that of the original composition, leading to potential inconsistencies.
+
+Log-ratio values of any type do not need to be normalized since the total sum is a term in both the numerator and the denominator. Thus, the same log-ratio value will be obtained for the vector of raw read counts, or the vector of normalized read counts, or the vector of proportions calculated from the counts. Thus, log-ratios are said to be equivalence classes such that there is no information in the total count (aside from precision) [@barcelo:2001]. Attempts to `open' the data are doomed to failure because the data cannot be moved from the simplex to Euclidian space. The total count delivered by the sequencing instrument is a function of the instrument and not the number of molecules sampled from the environment, thus the total count has no geometric meaning. If the data are collected in such a way that the total count represents the actual count in the environment, then the data are not compositional and issues regarding compositional data disappear. However, at present all sequencing platforms deliver a fixed-sum, random sample of the proportion of molecules in the environment.
+
+Note that this does not mean that the read depth is irrelevant since more reads for a sample translate into greater precision when estimating the proportions [@fernandes:2013,@gloorAJS:2016].
+
+
+\clearpage
+
+# The compositional PCA biplot
+
+The compositional PCA biplot [@Ait1983, @aitchison2002biplots] made by a Singular Value Decomposition of the CLR-transformed data is normally the first exploratory tool used to examine the dataset (`R_Block_2`). The quantitative information from the association and differential abundance tests can be obtained, in a qualitative manner, from the initial PCA plots themselves.
+
+```{r R_Block_2, echo=F, fig.cap="Compositional biplot generated from the CLR transformed OTU values with 0 replacement. The biplot is shown with scale=1, projecting the distances between samples onto the 2-D image as best as possible. The distance between OTUs (red) is a measure of their compositional association, but this is only a crude measure relative to $\\rho$. "}
+# perform a singular value decomposition
+pcx <- prcomp(E.clr)
+
+# plot a PCA biplot
+# calculate percent variance explained for the axis labels
+pc1 <- round(pcx$sdev[1]^2/sum(pcx$sdev^2),2)
+pc2 <- round(pcx$sdev[2]^2/sum(pcx$sdev^2),2)
+xlab <- paste("PC1: ", pc1, sep="")
+ylab <- paste("PC2: ", pc2, sep="")
+biplot(pcx, cex=c(0.6,0.4), var.axes=F,
+    scale=1, xlab=xlab, ylab=ylab)
+```
+
+We have previously given extensive guidance on the interpretation of these plots for microbiome data [@gloor2016s], but in general the large numbers of variables and the small number of samples often obscures important relationships. Thus, we prefer to plot the loadings and the sample relationships separately, and functions are provided for this in the `CoDaSeq` package.
+
+When we plot the individual OTUs separately as in Figure 3 (`R_Block_3`) on a loadings plot the resulting plot contains qualitative information on both differential relative abundance of OTUs and on association between OTUs. The distance and direction of OTU from the center of the plot is proportional to the standard deviation of the CLR value of that OTU in the dataset [@aitchison2002biplots]. In theory, OTUs that have a short link between them, (i.e., are nearly the same direction and distance from the origin) should be compositionally associated. However, our ability to make this conclusion is tempered by the proportion of variance explained by the first two principle components, and in practice at least 90% of the variance needs to be explained for  a high confidence determination. Thus, the compositional PCA biplot, or the loadings plot itself, should be used mainly for display, and the numerical differential relative abundance and compositional association measures should be used for quantitative insights.
+
+```{r R_block_3, echo=F, fig.width=3.5, fig.height=4, fig.cap="Plot of the relationship between the OTUs from the SVD. Here each OTU is colored red if it was identified as having an effect size greater than 1. The two OTUs with the  $\\rho$ value closest to one are highlighed in blue. See later sections for an explanation of effect size and $\\rho$."}
+
+# calculation of SVD in R_Block_2
+plot(pcx$rotation[,1], pcx$rotation[,2],
+    main="loadings", xlab=xlab, cex=0.5,
+    ylab=ylab, col=rgb(0,0,0,0.3), pch=19)
+points(pcx$rotation[,1][high.e],
+    pcx$rotation[,2][high.e], cex=0.8,
+    col=rgb(1,0,0,0.5))
+points(pcx$rotation[c("39306","39235"),1],
+    pcx$rotation[c("39306","39235"),2],
+    cex=0.5, col=rgb(0,0,1,1), pch=19)
+```
+
+\clearpage
+
+Similarly, we can plot the individual samples in Figure 4 (`R_Block_4`), with the ak samples in red, and the op samples in blue. Here the distances between points is proportional to the Euclidian distance of the CLR vectors of the samples. This is referred to as the Aitchison distance.
+
+```{r R_block_4, echo=F, fig.width=3.5, fig.height=4, fig.cap="Plot of the individual samples from the SVD output, with the ak samples in red, and the op samples in blue. Here the distance between points is proportional to the Euclidian distance of the CLR vectors of the samples. This is referred to as the Aitchison distance."}
+
+plot(pcx$x[,1], pcx$x[,2],
+    main="Samples", xlab=xlab, ylab=ylab,
+    col=c(rep("blue", 15), rep("red", 15)))
+```
+
+Similarly, we can calculate an Aitchison distance matrix as  in `R_Block_5` to generate the dendrogram in Figure 5 with sample names colored red or blue depending on if they fall within the op group, or the  ak group. Note that op_024146 falls completely within the ak group in the dendrogram. This is in accordance with the biplot which shows the same partitioning.
+
+```{r R_Block_5, , echo=F, fig.width=7, fig.height=5, fig.cap="Dendrogram plot of the individual samples from distance matrix output. Samples from op are colored in blue, and ak are coloured in red."}
+
+
+# anosim between groups using Aitchison distance
+dist.clr <- dist(E.clr)
+ano <- anosim(dist.clr, conds, permutations=999)
+
+# coloring from https://rpubs.com/gaston/dendrograms
+# make the dendrogram
+hc <- as.dendrogram(hclust(dist.clr, method="ward.D2"))
+hcd <- hclust(dist.clr, method="ward.D2")
+
+# function to get color labels
+colLab <- function(n) {
+    if (is.leaf(n)) {
+        a <- attributes(n)
+        #labCol <- labelColors[clusMember[which(names(clusMember) == a$label)]]
+        labCol <- if (grepl("ak", a$label) == TRUE ) "red" else "blue"
+        attr(n, "nodePar") <- c(a$nodePar, lab.col = labCol)
+    }
+    n
+}
+
+# using dendrapply
+clusDendro = dendrapply(hc, colLab)
+
+plot(clusDendro, main="Aitchison distance, Ward.D2 Cluster")
+
+```
+
+The multivariate distance between samples can be estimated using the Aitchison distance and the significance calculated using the vegan `anosim` function (`R_Block_5`). That is, the Aitchison distance can be used as a drop-in replacement for other distance or dissimilarity metrics used in the microbome literature. The Aitchison distance is compatible with compositional assumptions. By this test, the op and ak samples have a significantly different composition (P < `r ano$signif`).
+
+
+\clearpage
+
+# Correlation
+
+## The problem of spurious correlation
+
+Spurious correlation arises when data are constrained by a constant denominator; that is data that are represented as proportions, percentages, probabilities, relative abundances, etc [@Aitchison:1986]. Understanding the correlation problem is crucial since spurious correlation is the basis for essentially all data analysis anomalies associated with compositional data. The problem has been recognized since the beginning of statistical practice as noted by the quote from a paper by Karl Pearson [1897]:
+
+"if the ratio of two absolute measurements on the same or different organs be taken it is convenient to term this ratio an index.
+
+If $u=f_1(x,y)$ and $v=f_2(z,y)$ be two functions of the three variables $x,y,z$, and these variables be selected at random so there exists no correlation between $x,z$, $y,z$, or $z,x$, there will still be found to exist correlation between $u$ and $v$. Thus a real danger arises when a statistical biologist attributes the correlation between two functions like $u$ and $v$ to organic relationship $\ldots$ ." [@Pearson:1896]
+
+### This problem exists whenever there is a constant sum or denominator in a dataset: proportion, percentage, ppm, etc, or equivalently, when the dataset cannot have an infinite sum as happens in hight throughput sequencing datasets.
+
+## Numbers and proportions are very different
+
+Before we examine correlation in the large HMP dataset, we will illustrate the problem of correlation and compositionality in a small, easily understood dataset generated in `R_block_6` and displayed in the tables at the top of the page. Assume first that we are dealing with numbers and there are three samples (s1, s2, s3) each with five features (A-E).
+
+```{r R_block_6, echo=F, eval=T, results="asis"}
+# set up a data table, samples by row
+s1 <- as.integer(c(1,2,2,5,5) * 10)
+s2 <- as.integer(c(1.5,4,3,2,20) * 10)
+s3 <- as.integer(c(2,8,1,3,1.5) * 10)
+s <- rbind(s1,s2,s3)
+colnames(s) <- c("A", "B", "C", "D", "E")
+
+# calculate correlations of the numbers
+cor.s <- cor(s, method="spearman")
+
+# calculate proportions and correlations
+# with variables A:E
+s.p <- t(apply(s, 1, function(x) x/sum(x)))
+cor.s.p <- cor(s.p, method="spearman")
+
+# calculate proportions and correlations
+# with variables A:D
+s.p2 <- t(apply(s[,1:4], 1, function(x)
+    x/sum(x)))
+cor.s.p2 <- round(cor(s.p2, method="spearman"),1)
+
+# generate the three tables for display
+kable(list(s), format="pandoc", digits=3, caption="Counts")
+kable(list(s.p), format="pandoc", digits=3, caption="Proportions")
+kable(list(s.p2), format="pandoc", digits=3, caption="Subset Proportions")
+
+
+cor.tab <- rbind(as.character(cor.s[1,2:5]),c(cor.s[1,2:4], ""),cor.s.p[1,2:5], c(cor.s.p2[1,2:4], ""))
+rownames(cor.tab) <- c("S all", "S sub", "P all", "P sub")
+colnames(cor.tab) <- c("B", "C", "D", "E")
+
+kable(list(cor.tab), format="pandoc", caption="Correlation metrics designed for real numerical data such as Pearson or Spearman correlation coefficients are not reliable in compositional data")
+
+```
+
+Tables of numbers (Table 1), proportions calculated from the complete dataset (Table 2), and proportions calculated from the dataset with variable E removed (Table 3). This last situation is called a sub-composition and is a common operation when dealing with high throughput data. For example, rRNA and tRNA are usually removed physically or computationally prior to analysis of transcriptomic datasets, and 16S rRNA gene sequencing datasets include only those taxa that can have their DNA extracted and amplified.
+
+Note that the values represented as numbers, as proportions of the whole, and as proportions of the first 4 variables are different. For example, numerically s2$_D= 20$ and s3$_D = 30$, but proportionally these values are 0.066 and 0.194 in the whole proportional dataset and 0.19 and 0.214 in the subset proportional dataset. Thus, the \emph{absolute difference} between values is not stable. However, the \emph{ratios of the parts} remains intact. That is: \[ s1_A/s1_B = \frac{1}{2} = \frac{0.067}{0.133} = \frac{0.1}{0.2} = 0.5 \] as counts, proportions of the whole, and proportions of the subset..
+
+If we calculate the correlations for feature A from the whole, from a subset, from the whole as proportions, and a subset converted to proportions we see how the correlations can be affected by these changing values in Table 4. Here we observe that the correlations between features can change in both magnitude and in sign by an alarming amount.
+
+## Spurious correlation in action
+
+In Figure 6A, the same count data set (absolute abundances) is presented (5 features, 3 samples), and feature D is plotted vs feature A as numbers, as proportions with all features present (Fig 6B) and as proportions with feature E removed (Fig 6C). We can see how converting to proportions changes the relationships between features. This trivial example shows that absolute abundance data and the relative abundance data do not provide equal correlations on the parts in common, and thus that  approaches advocated in the literature that do not account completely for compositionality can be inaccurate [@McMurdie:2014a, @Weiss:2017aa]. Later we show that the Spearman's correlation is not stable when real data  are subset and that Pearson correlation is susceptible to false positives.
+
+Figure 6 plots A vs D  from the three tables and display the Spearman's and Pearson's correlation coefficients; the code is in `R_block_7`.
+
+```{r R_block_7, echo=F, fig.width=6, fig.height=2.5, fig.cap="Plots of A vs D for numbers, proportions and proportions from the subset where the last column was dropped. We can see that the relationship between the data points is not the same for the numerical and proportional data and that the relationship changes again when the proportional data are subset. \\emph{This is spurious correlation} because we see there is an unpredictable correlation observed between two variables whenever they share a common denominator."}
+
+par(mfrow=c(1,3))
+plot(s[,1],s[,4], xlab= "A", ylab="D", pch=19,cex=2, col="blue", main="Number", sub="Sp. cor. = -0.5: Pn cor. = -.5")
+plot(s.p[,1],s.p[,4], xlab= "A", ylab="D", pch=19,cex=2, col="red", main="Proportion: all", sub="Sp. cor. = 0.5: Pn cor = .36")
+plot(s.p2[,1],s.p2[,4], xlab= "A", ylab="D", pch=19,cex=2, col="orange", main="Proportion: subset", sub="Sp. cor. = -.87: Pn cor = -.99")
+
+```
+
+\clearpage
+
+## Geometric intuition of correlation of compositional data
+
+We usually think of correlations as linear relationships of the type $y=mx + b$, and measure correlation coefficients as a standardized covariance relationship. However, this approach does not work when analyzing correlations of compositional data regardless of the transformation [@Lovell:2015].
+
+## The negative correlation bias
+
+The variables in compositional data have a negative correlation bias. This is obvious in the case of a coin toss, where intuitively we know that the the observation of a fraction of heads, $h$ must be associated with a fraction of tails equal to $1 - h$.   This also   occurs in the multivariate case, where any observation of the fraction of the number 6, $s$, from a number of rolls of a die, must correspond with the fraction of the other rolls of $1-s$. Thus there must be at least one and possibly many negative correlations \textbf{because of the structure of compositional data}, the problem is that there is no theoretical method to distinguish those negative correlations that arise structurally from those that are true negative correlations driven by the underlying process [@Lovell:2015].
+
+## The problem of positive correlations
+
+Positive correlations are generally observed whenever two features have a simple linear relationship. However, compositional data must have a constant ratio relationship to be correlated [@Lovell:2015], and this is a subset of what would be discovered using Pearson or Spearman correlations.
+
+Thus, when examining compositional data two variables (or groups of variables) must have a constant ratio relationship in Euclidan space. In other words, if we plot $x$ and $y$ on a scatter plot they will lay on a line projecting from the origin. Such a line fulfils the linear model $y=m x$. We can see this in the Figure 7 "Euclidian" where the red and the black variables have a line of best fit that pass through the origin. However the blue variables have an intercept of 20. All three of these have an equivalently high Pearson and Spearman correlation coefficient. In the "Log" plot, the red and black points fall on lines with slope 1, but the blue line does not. Thus, while the blue variables have a high correlation, they are not compositionally associated since the ratio is not constant [@Lovell:2015]. The code for Figure 7 is in `R_block_8`.
+
+```{r R_block_8, echo=F,fig.height=5, fig.width=9, fig.cap="The Euclidian and Log plots show that data on a line with an intercept do not maintain a constant ratio. Two variables (in red or black) that have a constant ratio will be linear and pass through the intercept in Euclidian space, and will have a slope of 1 on a log-log plot, we can see that the blue line with an intercept of 2 is neither linear, nor does it have a slope of 1."}
+# Ratio information
+
+par(mfrow=c(1,2))
+# make some random uniform data for the x data
+x.r <- runif(100,1,100)
+
+# make the y data the same as x with random normal scatter
+y.r <- vector()
+for( i in 1:length(x.r)){y.r[i] <- rnorm(1, mean=x.r[i], sd=6)}
+
+# plot Euclidian data,lines first then scatter points
+curve(x*1, 1,100, lwd=3, xlim=c(1,150), ylim=c(1,400), xlab="X", ylab="Y", main="Euclidian", col=rgb(0,0,0,0.3))
+curve(x*4, 1,100, add=T, col=rgb(1,0,0,0.3), lwd=3)
+curve(x*1 + 20, 1,100, add=T, col=rgb(0,0,1,0.3), lwd=3)
+text(1,200, label="y=x", col="black", pos=4)
+text(1,250, label="y=4x", col="red", pos=4)
+text(1,300, label="y=x+20", col="blue", pos=4)
+
+points(x.r, y.r, col=rgb(0,0,0,0.5), pch=19, cex=0.4)
+points(x.r, y.r*4, col=rgb(1,0,0,0.5), pch=19, cex=0.4)
+points(x.r, y.r+20, col=rgb(0,0,1,0.5), pch=19, cex=0.4)
+
+# plot same data as log-log
+curve(x*1, 1,100, lwd=3, xlim=c(1,150), ylim=c(1,400), xlab="X", ylab="Y", main="Log", log="xy", col=rgb(0,0,0,0.3))
+curve(x*4, 1,100, add=T, col=rgb(1,0,0,0.3), lwd=3)
+curve(x*1 + 20, 1,100, add=T, col=rgb(0,0,1,0.3), lwd=3)
+points(x.r, y.r, col=rgb(0,0,0,0.5), pch=19, cex=0.4)
+points(x.r, y.r*4, col=rgb(1,0,0,0.5), pch=19, cex=0.4)
+points(x.r, y.r+20, col=rgb(0,0,1,0.5), pch=19, cex=0.4)
+```
+
+## Interpretation of Figure 7
+
+1. note that any pairs of variables that have a constant ratio appear on a line projecting from the origin in Euclidian space. The red and black variables are in constant ratio, but the blue variables are not.
+2. Constant ratio relationships cannot have an intercept in Euclidan space plots because the constant ratio between features is not preserved. This becomes obvious as a non-linear relationship in log-space
+3. Constant ratio relationships can have a slope $\ne 1$ in Euclidian space, the slope becomes the intercept when plotted on a log-log scale.
+4. Familiar measures of correlation do not require an intercept of 0
+5. False positive correlations are thus an issue when observing either positive and negative correlation but for different reasons.
+
+\clearpage
+
+# Probability and expected values
+
+## Imputing 0
+
+High throughput sequencing data appears to deliver counts per genetic fragment in each sample (the genetic fragment can be a targeted amplicon or a short RNA or DNA sequence fragment). \textbf{However, this is a myth: the sequencing instrument can only deliver a fixed number of sequence reads}, and so the data are constrained to a constant, arbitrary sum.
+
+The process that generates the reads is to take a random sample from the environment, make a library and take a random sample of the library and sequence it. The number of molecules in the environment and in the library is substantially greater than the number of molecules sequenced, making sequencing a multivariate Poisson sampling process [@fernandes:2013]. Thus, it is more proper to think about each count as a probability $p$ of observing the count for each genetic fragment conditioned on the total sequencing depth and the underlying frequency of the molecules in the environment. That is: for the $j^{th}$ random vector of counts from the environment, $\boldsymbol{\vec{s}}_{j}$:
+
+\[
+\boldsymbol{\vec{s}}_{j} =  [s_{1},s_{2} \ldots  s_{D}]
+\]
+
+we wish to determine the underlying frequency $f_{i j}$ of the $i^{th}$ molecule in the $j^{th}$ environment, which is proportional to the probability of sampling the $i^{th}$ molecule from that environment. A vector of the maximum likelihood estimates of the underlying probabilities is:
+
+\begin{equation}
+\boldsymbol{\vec{p}}_j = [p_1 \ldots p_D] = \frac{\boldsymbol{\vec{s}}_{j}}{\alpha_j}; \alpha_j=\sum{\boldsymbol{\vec{s}}_{j}}
+\end{equation}
+
+\begin{equation}
+\boldsymbol{\vec{p}}_{i j} = \frac{(\boldsymbol{\vec{s}}_{i j} | f_{i j})}{\alpha_j}
+\end{equation}
+
+The uncertainty of measurement of $\boldsymbol{\vec{p}}_{i j}$ depends directly on $f_{i j}$ and inversely with $\alpha_j$. As $f_{i j}$ approaches or becomes smaller than  $1 / \alpha_j$ (i.e., as $\boldsymbol{\vec{s}}_{i j} \rightarrow 0$), the uncertainty of $\boldsymbol{\vec{p}}_{i j}$ becomes very large indeed [@Jaynes:2003, @fernandes:2013]. Thus, the maximum likelihood estimate of the probability vector (and the corresponding count vector) can be exponentially wrong when the data are sparse [@Newey:1994]. Indeed, we observe a very large amount of variation in technical replicates [@fernandes:2013, @gloorAJS:2016].
+
+Instead of attempting to identify a point estimate of the probability vector, we adapt standard Bayesian approaches to estimate the probabilities by making the assumption that the nucleotide fragments are derived as a multivariate Poisson random sample of the underlying environment [@fernandes:2013]. Within this framework we generate $k$ random instances of the probabilities by drawing from the Dirichlet distribution to generate an estimate of the posterior distribution of the underlying probabilities.
+
+\begin{multline}
+P_{j,1 \ldots k}=
+\left( \begin{array}{c}
+    \boldsymbol{\vec{p}}_{j 1} \\
+    \boldsymbol{\vec{p}}_{j 2} \\
+    \vdots \\
+    \boldsymbol{\vec{p}}_{j k} \\
+\end{array} \right)=
+\left( \begin{array}{ccccc}
+    p_{11} & p_{21} & p_{i1} & \dots  & p_{D1} \\
+    p_{12} & p_{22} & p_{i2} & \dots  & p_{D2} \\
+    \vdots & \vdots & \vdots & \ddots & \vdots \\
+    p_{1k} & p_{2k} & p_{ik} & \dots  & p_{Dk}\\
+\end{array} \right) \\
+\sim Dirichlet_{(1 \ldots k)}(\boldsymbol{\vec{s}}_{j} + 0.5)
+\label{eq:matrix}
+\end{multline}
+
+Each of the $k$ random instances of the posterior distribution is a probabilistic estimate of the data, given the observed vector of counts $\boldsymbol{\vec{s}}_{j}$. In the case where the $\boldsymbol{\vec{s}}_{i j} = 0$, $P_{i,j,1 \ldots k}$ contains many non-0 estimates of the probability of $\boldsymbol{\vec{s}}_{i j}$ \emph{each of which is an equally valid estimate of the probability of that value}. Similarly, if $\boldsymbol{\vec{s}}_{i j}$ is non-0,
+$P_{i,j,1 \ldots k}$ contains many estimates of that probability.
+
+A distribution of centered log-ratio values $C_{j, 1 \ldots k}$ can now be calculated since all values are non-0, these are calculated row-wise, i.e. for the $k^{th}$ row:
+
+\begin{equation}
+C_{j k} = log(p_{i,j,k}) - mean(log(P_{j k}))
+\end{equation}
+
+At this point, each value in the vector $\boldsymbol{\vec{s}}_j$ has been used to generate a distribution of centered log-ratio (CLR) values where no log-ratio calculation included a 0 value, but a value of 0 could approach 0 with an arbitrary probability. Thus, the distribution of CLR values are wide near the low count margin, and when $\alpha$ is small, and become progressively narrower otherwise. While the Dirichlet distribution is not a good null model for compositional data  because it makes strong assumptions of independence [@Aitchison:1986], it is an adequate model to generate the posterior distribution of probabilities derived from count compositional data [@fernandes:2013, @gloorAJS:2016].
+
+##  Why expected values are useful
+
+Any univariate test statistic of OTUs or genes (differential relative abundance, compositional association, etc) or multivariate statistic can be calculated across the distribution and an expected value derived. Since the distribution is wide at the low count margin, there is a large stochastic effect on the calculated test statistic, and the expected value will tend towards the middle of the distribution of that test statistic (i.e, a p-value will tend towards a value of 0.5). Conversely, since the distribution is narrow when $\boldsymbol{\vec{s}}_{i j}$ is not trivial, the expected value of the test statistic  will have a smaller stochastic influence.
+
+\clearpage
+
+## The expected value $\rho$: $E( \rho )$:
+
+The $\rho$ metric is a replacement for a correlation coefficient, and is based on scaling the variance matrix, an approach first conceived by [@Lovell:2015]. Lovell et. al, suggested $\phi$, where 0 denotes perfect association.
+
+\begin{equation}
+ \phi_{xy} = \frac{Var(clr(x) - clr(y))}{Var(clr(x))}, \in 0, + \infty
+\end{equation}
+
+or the geometric equivalent:
+
+\begin{equation}
+ \phi_{xy} =  1 + m^2 - 2 m  | r |
+\end{equation}
+
+where $m$ is the slope and $r$ is the correlation coefficient.
+
+$\phi_{xy}$ can be modified to be symmetrical and scaled by a modification of the formula and the new metric is called $\rho$  [@erb:2016]:
+
+\begin{equation}
+ \rho_{xy} = 1 -  \frac{Var(clr(x) - clr(y))}{Var(clr(x)) + Var(clr(y))}, \in -1,1
+\end{equation}
+
+
+or the geometric equivalent:
+
+\begin{equation}
+ \rho_{xy} = \frac{2r}{m + 1/m}
+\end{equation}
+
+
+The $\phi$ and $\rho$ metrics are expected to be subcompositionally coherent, that is, either metric is expected to have the same value for pairs of features in common if the entire dataset is examined or any reasonable subset of the OTUs in the dataset is examined. In the context of high throughput sequencing, this expectation is only true for non-sparse data. However, the expectation may not be true for sparse data where 0 values must be imputed, or if extremely small numbers of OTUs are examined. Figure 8 shows four measures of association between two OTUs with all others that are present in both an entire and a subset dataset drawn from the HMP oral dataset. Note that the Spearman correlation coefficient is not consistent and that the point estimate of $\rho$ is much more consistent than is the Spearman correlation coefficient. The point estimate of $\rho$ is not identical because of sparsity; the point estimate of 0 is not identical between the whole dataset and the subset. However, observe that the $E(\rho)$ is essentially consistent in the whole dataset when compared to the subset dataset. This reproducibility becomes more consisent with more Dirichlet Monte Carlo Replicates, and the reader can modify the code in `R_block_1 and R_block_9` to demonstrate that increasing the number of DMC intances 100-fold will result in a much tighter E($\rho$) relationship, although at a cost of time to calculate. The `propr` documentation contains additional information on how to interpret the results. `R_block_1` contains the calculations and `R_block_9` contains the plotting commands for Figure 8.
+
+\newpage
+
+```{r R_block_9, echo=F, fig.width=7, fig.height=12, message=F,warnings=F, fig.cap="Measures of association  should be stable to subsetting the data. The Spearman and Pearson correlation coefficients, point estimates of $\\rho$ and E($\\rho$) are shown for OTU number 11 or OTU number 39306 to all other OTUs calculated on log-ratio transformed values (clr), from the subset of the HMP oral microbiome dataset. The all features axis contains all OTUs in the calculation and the remove 5 axis is the same calculation performed with five OTUs removed. E($\\rho$) was calculated with 256 Dirichlet Monte-Carlo instances. We  see that the Spearman correlation coefficient is unstable even in a dataset containing hundreds of OTUs, just like it was in Figure 6. The Pearson correlation coefficient is also unstable, but less so, and is strongly biased towards having a few extremely high correlation values, most of which will be false positives for the reasons outlined in Figure 7 and illustrated in Figure 9. "}
+
+# names for the figures
+mn.rho11 <- expression(paste("E(", rho, ") OTU_11"))
+mn.erb11 <- expression(paste("Point ", rho, " OTU_11"))
+mn.rho3 <- expression(paste("E(", rho, ") OTU_39306"))
+mn.erb3 <- expression(paste("Point ", rho, " OTU_39306"))
+mn.Sp3 <- expression(paste("Spearman OTU_39306"))
+mn.Sp11 <- expression(paste("Spearman OTU_11"))
+mn.p3 <- expression(paste("Pearson OTU_39306"))
+mn.p11 <- expression(paste("Pearson OTU_11"))
+
+#### ADDED IN PEARSON HERE
+par(mfrow=c(4,2))
+plot(cor.rare.f["11",], cor.f["11", rownames(cor.f) %in% rownames(cor.rare.f)],
+   pch=19, col=rgb(0,0,0,0.3), cex=0.7, xlab="remove 5", ylab="all features",
+   xlim=c(-1.0,1.0), ylim=c(-1.0,1.0), main=mn.Sp11)
+abline(0,1, lty=2, lwd=2, col=rgb(1,0,0,0.3))
+
+plot(cor.rare.f["39306",], cor.f["39306", rownames(cor.f) %in% rownames(cor.rare.f)],
+   pch=19, col=rgb(0,0,0,0.3), cex=0.7, xlab="remove 5", ylab="all features",
+   xlim=c(-1.0,1.0), ylim=c(-1.0,1.0), main=mn.Sp3)
+abline(0,1, lty=2, lwd=2, col=rgb(1,0,0,0.3))
+
+plot(cor.rare.p["11",], cor.p["11", rownames(cor.p) %in% rownames(cor.rare.p)],
+   pch=19, col=rgb(0,0,0,0.3), cex=0.7, xlab="remove 5", ylab="all features",
+   xlim=c(-1.0,1.0), ylim=c(-1.0,1.0), main=mn.p11)
+abline(0,1, lty=2, lwd=2, col=rgb(1,0,0,0.3))
+
+plot(cor.rare.p["39306",], cor.p["39306", rownames(cor.p) %in% rownames(cor.rare.p)],
+   pch=19, col=rgb(0,0,0,0.3), cex=0.7, xlab="remove 5", ylab="all features",
+   xlim=c(-1.0,1.0), ylim=c(-1.0,1.0), main=mn.p3)
+abline(0,1, lty=2, lwd=2, col=rgb(1,0,0,0.3))
+
+
+plot(perb.rare@matrix["11",], perb.all@matrix["11", rownames(perb.all@matrix) %in% rownames(perb.rare@matrix)],
+   pch=19, col=rgb(0,0,0,0.3), cex=0.7, xlab="remove 5", ylab="all features",
+   xlim=c(-1.0,1.0), ylim=c(-1.0,1.0), main=mn.erb11)
+abline(0,1, lty=2, lwd=2, col=rgb(1,0,0,0.3))
+
+plot(perb.rare@matrix["39306",], perb.all@matrix["39306", rownames(perb.all@matrix) %in% rownames(perb.rare@matrix)],
+   pch=19, col=rgb(0,0,0,0.3), cex=0.7, xlab="remove 5", ylab="all features",
+   xlim=c(-1.0,1.0), ylim=c(-1.0,1.0), main=mn.erb3)
+abline(0,1, lty=2, lwd=2, col=rgb(1,0,0,0.3))
+
+
+plot(rho.rare@matrix["11",], rho.all@matrix["11", rownames(rho.all@matrix) %in% rownames(rho.rare@matrix)],
+   pch=19, col=rgb(0,0,0,0.3), cex=0.7, xlab="remove 5", ylab="all features",
+   xlim=c(-1.0,1.0), ylim=c(-1.0,1.0), main=mn.rho11)
+abline(0,1, lty=2, lwd=2, col=rgb(1,0,0,0.3))
+
+
+plot(rho.rare@matrix["39306",], rho.all@matrix["39306", rownames(rho.all@matrix) %in% rownames(rho.rare@matrix)],
+   pch=19, col=rgb(0,0,0,0.3), cex=0.7, xlab="remove 5", ylab="all features",
+   xlim=c(-1.0,1.0), ylim=c(-1.0,1.0), main=mn.rho3)
+abline(0,1, lty=2, lwd=2, col=rgb(1,0,0,0.3))
+
+```
+
+\clearpage
+
+```{r R_block_10, echo=FALSE, }
+x.rho.high <- matrix(data=NA, nrow=5, ncol=4)
+colnames(x.rho.high) <- c("OTU 1", "OTU 2", "E(rho)_all", "E(rho)_r5")
+# choose some associated OTUs
+x.rho.high[,1] <- c("38349","30378", "38802", "38193", "39306")
+x.rho.high[,2] <- c("26584","29014", "31478", "35952", "39235")
+for(i in 1:5){
+    x.rho.high[i,3] <- round(rho.all@matrix[x.rho.high[i,1], x.rho.high[i,2]], 3)
+    x.rho.high[i,4] <- round(rho.rare@matrix[x.rho.high[i,1], x.rho.high[i,2]], 3)
+}
+kable(list(x.rho.high), digits=3, format="pandoc", caption="The E($\\rho$) metric for selected OTU pairs.")
+```
+At present we must examine the linear relationship between two variables when a value of $\rho$ is not trivially near to 1. Table 5 shows five association pairs with high E($\rho$) values. Note that the expected value is similar in the complete and remove 5 dataset. The  $\rho$ metric is attempting to summarize both the slope and linearity of any relationship  between the values into one number, so that a better Pearson correlation coefficient can be offset by a poorer fit to a linear line of slope 1. Figure 9 plots several associations, from Table 5 to show the slope and scatter around the line of best fit. We see that the associations between the OTUs given as examples in Table 5 are good fits to the assumption. `R_block_10` contains the code to generate the table, `R_Block_11` contains the code to generate Figure 9.
+
+Figure 8 demonstrated that the Pearson correlation also appeared to be reproducible in compositional data. However, as noted above, the Pearson correlation can include many false positive correlations. The bottom two panels in Figure 9  plot the relationship between the Pearson $r$ value and the E($\rho$) values for the HMP dataset, and the slope and association for one pair. Here we observe that there are many high $r$ values with modest or low E($\rho$) values, and the particular one shown in red in the bottom left panel is plotted in the bottom right panel. Thus, we find that a high Pearson $r$ value can be a false positive since the two OTUs are not necessarily in constant ratio.
+
+```{r R_block_11, echo=F, fig.height=7, fig.width=6, fig.cap="Plots showing the associations between two OTU pairs with the $\\rho$ value taken from the table (top two panels), and one OTU pair that has a high Pearson correlation coefficient but low E($\\rho$) value (bottom two panels). The dashed blue lines show the ideal line of slope 1, the dashed red lines show the line of best fit to the data. The '11 vs. 37246' pair is correlated but is not compositionally associated and the relationship between the Pearson correlation and E($\\rho$) and Pearson correlation for this pair of variables is highlighted in the bottom left panel. The association between these OTUs plotted in the bottom right panel, showing that this association is a false positive identified by Pearson correlation.  "}
+# linear model of association
+lm.1 <- lm(as.numeric(f.e["39235",4:33]) ~
+    as.numeric(f.e["39306", 4:33])    )
+lm.2 <- lm(as.numeric(f.e["29014",4:33]) ~
+    as.numeric(f.e["30378", 4:33])    )
+lm.3 <- lm(as.numeric(f.e["37246",4:33]) ~
+    as.numeric(f.e["11", 4:33])    )
+
+# plot the pairwise associations
+par(mfrow=c(2,2))
+plot(as.numeric(f.e["39306", 4:33]),
+    as.numeric(f.e["39235",4:33]),
+    main="39235 vs 39306", xlab="OTU 39306",
+    ylab="OTU 39235", pch=19, col=rgb(0,0,0,0.3))
+
+abline(2,1, lty=2, col="blue", lwd=2)
+abline(lm.1$coefficients[1],
+    lm.1$coefficients[2],
+    lwd=2, lty=2, col="red")
+
+plot(as.numeric(f.e["30378", 4:33]),
+    as.numeric(f.e["29014",4:33]),
+    main="30378 vs 29014", xlab="OTU 30378",
+    ylab="OTU 29014",col=rgb(0,0,0,0.3), pch=19)
+abline(2,1, lty=2, col="blue", lwd=2)
+abline(lm.2$coefficients[1],
+    lm.2$coefficients[2],
+    lwd=2, lty=2, col="red")
+
+f.pos <- as.numeric(which(cor.rare.p["11",] > 0.75 & perb.rare@matrix["11",] < 0.3))
+
+plot(cor.rare.p["11",],perb.rare@matrix["11",], pch=19, col=rgb(0,0,0,0.3), xlab="Pearson cor", ylab="E(rho)", main="r vs E(rho)")
+points(cor.rare.p["11",f.pos],perb.rare@matrix["11",f.pos], pch=19, col="red")
+
+plot(as.numeric(f.e["11", 4:33]),
+    as.numeric(f.e["37246",4:33]),
+    main="11 vs 37246", xlab="OTU 30378",
+    ylab="OTU 29014",pch=19, col=rgb(0,0,0,0.3))
+abline(2,1, lty=2, col="blue", lwd=2)
+abline(lm.3$coefficients[1],
+    lm.3$coefficients[2],
+    lwd=2, lty=2, col="red")
+
+```
+
+\clearpage
+
+## Differential relative abundance with ALDEx2
+
+ALDEx2 measures differential (relative) abundance as calculated by an expected p-value, an expected Benjaminin-Hochberg adjusted p-value and as an expected standardized effect size [@fernandes:2014, @gloor:effect]. The latter is a much more robust estimate, and should be used whenever possible since a standardized effect size is a much more reproducible metric of 'significance' than is a p-value [@Halsey:2015aa].
+
+We use effect plots for display purposes because they show the relationship between difference and dispersion [@gloor:effect] which are the constituents of p-values, but are not scaled by the number of samples. We can see in Figure 10 that the majority of OTUs in the HMP dataset have much more dispersion (within group variation, analogous to the standard deviation) than they do between group difference. In fact, the majority of OTUs have a dispersion value greater than $2^3 = 8$ but less than 4-fold different relative abundance between groups. Clearly, even a low p-value is meaningless in this situation. The OTUs with greater difference than dispersion are indicated by the red points in the plot. The second plot, E vs. P, shows the relationship between the standardized effect and p-value. `R_Block_12` contains the code for Figure 10, values were calculated in `R_block_1`.
+
+```{r R_block_12, echo=F, fig.width=8, fig.height=4.5, message=F,warnings=F, fig.cap="The effect plot shows a scatter plot of the difference between the relative abundance of OTUs in groups 1 and 2 plotted vs. the maximum dispersion of the OTU in either group: each point is an individual OTU. We can see that the dispersion for most OTUs is much greater than the difference between groups, essentially indicating that the variation within each group is larger than the difference between groups. Points are colored in blue if the expected Benjamini-Hochberg false discovery rate (FDR) value is less than 0.05, and circled in red if the absolute expected standardized effect size is $\\ge 1$. The E vs p plot shows the relationship between effect size and the false discovery rate. The effect size will be relatively stable regardless of the sample size, while the FDR will depend upon sample size."}
+
+par(mfrow=c(1,2))
+plot(f.e$diff.win, f.e$diff.btw,
+    pch=19, col=rgb(0,0,0,0.3),
+    cex=0.5, main="effect plot",
+    xlab="Dispersion", ylab="Difference")
+points(f.e$diff.win[low.p],
+    f.e$diff.btw[low.p],
+    pch=19, col=rgb(0,0,1,0.5),
+    cex=0.5)
+points(f.e$diff.win[high.e],
+    f.e$diff.btw[high.e],
+    col=rgb(1,0,0,0.5), cex=0.8)
+
+abline(0,1, lty=2, lwd=2,col="grey")
+abline(0,-1, lty=2, lwd=2,col="grey")
+
+plot(f.e$effect, f.t$we.eBH, log="y",
+    pch=19, col=rgb(0,0,0,0.3),
+    main="E vs p", xlab="effect size",
+    ylab="E(p.adjust)", cex=0.5)
+points(f.e$effect[low.p], f.t$we.eBH[low.p],
+    pch=19, col=rgb(0,0,1,0.5),cex=0.5)
+points(f.e$effect[high.e], f.t$we.eBH[high.e],
+    col=rgb(1,0,0,0.5), cex=0.8)
+```
+
+\newpage
+
+The table shows differentially abundant OTUs in this dataset with an absolute effect size $\ge1$ and the genera they belong (`R_Block_13`):
+
+```{r R_block_13,echo=F}
+kable(list(as.vector(hmpgenera[high.e,"genus"])), format="pandoc", caption="OTU genera with large effect size differences.")
+
+```
+
+The ALDEx2 documentation has additional information on the meanings of the test statistics and how to access and explore the data.
+
+\clearpage
+
+# Summary
+- compositional data are any positive data in which ratios between components are relevant. The sum of components can be constant along the sample or it can be irrelevant.
+- it is useful to think of the count associated with an OTU or gene obtained through high throughput sequencing data as a probability conditioned on the underlying frequency in the environment scaled by the total read depth of the sample
+- data generated by high throughput sequencing are compositional because the machine constrains the total count
+- the relationship between the parts (OTUs, genes) is the only information available
+- the data cannot be opened and so the data lay on a simplex: i.e., the data cannot be returned to the same space as the observations in the underlying environment
+- a Bayesian estimate of the frequency can be used to generate expected values of test statistics
+- any simplex is always equivalent to the unit simplex
+- "in the absence of any other information or assumptions, correlation of relative abundances is just wrong" [@Lovell:2015]. Thus we must examine two numbers, slope and correlation (Egozcue, submitted)
+
+\clearpage
+
+# References
