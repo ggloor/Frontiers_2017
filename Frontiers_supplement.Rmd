@@ -640,10 +640,10 @@ abline(lm.2$coefficients[1],
     lm.2$coefficients[2],
     lwd=2, lty=2, col="red")
 
-f.pos <- as.numeric(which(cor.rare.p["11",] > 0.75 & perb.rare@matrix["11",] < 0.3))
+f.pos <- as.numeric(which(cor.rare.p["11",] > 0.75 & rho.rare@matrix["11",] < 0.25))
 
-plot(cor.rare.p["11",],perb.rare@matrix["11",], pch=19, col=rgb(0,0,0,0.3), xlab="Pearson cor", ylab="E(rho)", main="r vs E(rho)")
-points(cor.rare.p["11",f.pos],perb.rare@matrix["11",f.pos], pch=19, col="red")
+plot(cor.rare.p["11",],rho.rare@matrix["11",], pch=19, col=rgb(0,0,0,0.3), xlab="Pearson cor", ylab="E(rho)", main="r vs E(rho)")
+points(cor.rare.p["11",f.pos],rho.rare@matrix["11",f.pos], pch=19, col="red")
 
 plot(as.numeric(f.e["11", 4:33]),
     as.numeric(f.e["37246",4:33]),
